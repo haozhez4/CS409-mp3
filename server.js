@@ -15,6 +15,10 @@ var port = process.env.PORT || 3000;
 
 // Connect to a MongoDB --> Uncomment this once you have a connection string!!
 //mongoose.connect(process.env.MONGODB_URI,  { useNewUrlParser: true });
+mongoose.set('strictQuery', true);
+mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('MongoDB connected'))
+  .catch((e) => { console.error('MongoDB connection error:', e); process.exit(1); });
 
 // Allow CORS so that backend and frontend could be put on different servers
 var allowCrossDomain = function (req, res, next) {
@@ -37,3 +41,8 @@ require('./routes')(app, router);
 // Start the server
 app.listen(port);
 console.log('Server running on port ' + port);
+
+app.use(function (_req, res) {
+  res.status(404).json({ message: "Endpoint not found", data: null });
+});
+
