@@ -14,7 +14,7 @@ var app = express();
 var port = process.env.PORT || 3000;
 
 // Connect to a MongoDB --> Uncomment this once you have a connection string!!
-mongoose.connect(process.env.MONGODB_URI,  { useNewUrlParser: true });
+// mongoose.connect(process.env.MONGODB_URI,  { useNewUrlParser: true });
 mongoose.set('strictQuery', true);
 mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log('MongoDB connected'))
