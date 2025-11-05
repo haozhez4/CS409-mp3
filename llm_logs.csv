@@ -1,0 +1,38 @@
+timestamp,env,component,scenario,prompt_or_input,expected_behavior,actual_behavior,error_message,root_cause_hypothesis,repro_steps,severity,status,owner,fix_suggestion,tags,notes
+2025-10-30 09:05:00,prod,db/mongoose,MongoDB URI null causes SRV parse crash,Start server on Render; GET /api/users,Server boots; /api returns 200; /api/users returns list,Process crashes during startup,TypeError: Cannot read properties of null (reading 'split'),process.env.MONGODB_URI is undefined or empty in Render,"1) Set MONGODB_URI in Render Environment (no quotes, one line)
+2) Save & Rebuild
+3) Add startup guard to log masked URI",P1,open,backend,Guard against missing env; expose /api/health; do not process.exit(1) on first failure,"render,mongo,env,bootstrap","Happens only in cloud, not locally"
+2025-11-02 10:11:00,prod,db/mongoose,Database name too long due to stray space,Deploy with SRV URI,Connect to Atlas,Connection fails immediately,MongoError: Database name ... is too long,"Space after '?' turned query string into db name (e.g., '/cluster0? retryWrites=...')","1) Remove spaces around '?'
+2) Prefer '/db?retryWrites=true&w=majority&appName=Cluster0' or just '/?retryWrites...'",P1,fixed,backend,Trim URI; validate format in CI,"mongo,uri,whitespace",Copy/paste regression
+2025-11-03 11:17:00,prod,config/env,MONGODB_URI undefined on Render,GET /api shows healthy,Env is available and DB connects,Endpoint prints: 'My connection string is undefined',,Env var name mismatch or value not saved/redeployed,"1) Ensure key is exactly 'MONGODB_URI'
+2) Save, Rebuild & Deploy
+3) Remove .env from repo or rename to .env.example",P1,open,backend,Print boolean only (no secrets); fail fast with helpful message,"render,env,naming",Different names used in code vs platform
+2025-11-04 12:23:00,prod,platform/render,Cold start causes long waits,Hit /api/users from Postman,Response within a few seconds,Postman stuck on 'Sending request…' 30–60s,,Free instance asleep; connecting to Atlas on wake,"1) First warm /api/health
+2) Remove process.exit on connect error
+3) Set serverSelectionTimeoutMS=10000",P2,in-progress,platform,Add health route; keep instance warm via ping,"render,cold-start,atlas",Expected on free tier
+2025-10-30 13:29:00,prod,router/express,GET /api/users 500 when no query params,GET /api/users with no params,Return all users or [],500 Internal Server Error,Unexpected token u in JSON at position 0,Direct JSON.parse on undefined for where/sort/select/count,"1) Use safe parser; default where={}
+2) limit undefined for users
+3) unify error handler to JSON",P1,fixed,backend,"Add safeJSON; global error middleware returns {message,data:null}","users,query,parsing",Reproduces on empty querystring
+2025-11-02 14:35:00,prod,router/express,GET /api/tasks ignores default limit=100,GET /api/tasks with no limit,Return up to 100 tasks by default,Returns all tasks (performance hit),,Missing default limit on tasks endpoint,"1) Set limit = Number(req.query.limit) || 100
+2) Keep users unlimited",P2,open,backend,Use mongoose limit; verify with large dataset,"tasks,pagination,performance",Required by assignment spec
+2025-11-03 15:41:00,prod,router/express,select parameter not applied on :id endpoints,"GET /api/users/:id?select={""name"":1}",Return only requested fields,Returns full document,,Forgot to apply select to findById() path,"1) Parse select via safeJSON
+2) Use Model.findById(id).select(select)",P2,open,backend,Add unit tests for single-doc select,"select,details,users,tasks",Spec requires it
+2025-11-04 16:47:00,prod,models/relation,PUT /api/tasks breaks user.pendingTasks sync,PUT task with new assignedUser,Old user pendingTasks removes; new adds,Only task updated; users not synced,,No transaction or missing update calls,"1) Find previous assignee; pull task id
+2) Push to new assignee
+3) Handle unassigned case",P1,in-progress,backend,Wrap in session/transaction or explicit sequential updates,"relation,task,user,pendingTasks",Edge cases on reassignment
+2025-10-30 09:53:00,prod,models/relation,DELETE /api/tasks does not clean user's pendingTasks,DELETE a task,Task removed and user.pendingTasks cleaned,Task deleted but still listed on user,,No cleanup step after delete,"1) If task.assignedUser exists, pull task id from that user
+2) Return 204",P1,open,backend,Implement cleanup hook or explicit update,"relation,delete,cleanup",Spec requirement
+2025-11-02 10:59:00,prod,models/relation,PUT /api/users pendingTasks not synchronized,PUT user with pendingTasks array,All referenced tasks are assigned to this user,User updates but tasks remain unassigned/old,,Forgot to update tasks.assignedUser when pendingTasks changes,"1) Diff arrays; assign/unassign accordingly
+2) Validate task ids",P1,open,backend,Keep invariant: one task → one user,"user,task,consistency",Check assignedUserName too
+2025-11-03 11:10:00,prod,validation,Duplicate user email allowed,POST /api/users (same email twice),Second request 400 with message,201 Created twice,,Unique index/validation missing,"1) Unique index on email
+2) Handle Mongo duplicate key error",P2,open,backend,"Return human-readable error {message,data:null}","users,validation,unique",Spec requires unique email
+2025-11-04 12:16:00,prod,validation,Create task without name or deadline,"POST /api/tasks {""description"":""...""}",400 Bad Request with message,201 Created or 500,,Missing server-side validation,"1) Validate name & deadline
+2) Set defaults for others",P2,open,backend,Schema + request validation layer,"tasks,validation,required",Assignment requirement
+2025-10-30 13:22:00,prod,docs/testing,Using localhost URL while testing Render,Run dbFill.py or Postman,Target the correct base URL,Requests sent to http://localhost:3000/,,Using local URL instead of https://<service>.onrender.com,"1) Switch base URL to Render
+2) For scripts, update -u and -p parameters or write HTTPS version",P3,fixed,devex,Maintain .env.local vs .env.prod bases in Postman environment,"postman,script,base-url",Common during deploy
+2025-11-02 14:28:00,prod,router/express,Route mounted without /api prefix,Frontend calls /api/users,200 OK,404 Not Found,,"app.use('/users', ...) instead of app.use('/api/users', ...)","1) Mount router at '/api'
+2) Verify in logs",P2,fixed,backend,Add morgan to log requests,"routing,prefix,cors",Mismatch after refactor
+2025-11-03 15:34:00,prod,platform/render,No lightweight health route during wakeup,Ping lightweight endpoint first,Fast 200 to warm instance,Only heavy endpoints exist; long delays,,No /api/health to warm instance before DB calls,"1) Add /api/health (no DB)
+2) Warm before heavy queries",P3,planned,platform,Better user feedback during wake,"health,cold-start,ux",Helps Postman/monitoring
+2025-11-04 16:40:00,prod,router/express,Server returns HTML 500 page,Any server error,"JSON {message, data:null} per spec",HTML Internal Server Error page,,Missing global error middleware or not last in chain,"1) Add error handler at the end
+2) Standardize messages and codes",P2,fixed,backend,Consistent API contract for graders,"errors,json,middleware",Aligns with MP3 spec
