@@ -1,116 +1,133 @@
 const express = require("express");
 const User = require("../models/user");
 const Task = require("../models/task");
-const { parseCommonQueryParams, parseJSONParam } = require("../query");
+const mongoose = require("mongoose");
 
 const router = express.Router();
 
 // GET /api/users
-router.get("/", async (req, res, next) => {
+router.get("/", async (req, res) => {
   try {
-    const { where, sort, select, skip, limit, count } = parseCommonQueryParams(req, { defaultLimit: undefined });
-    const q = User.find(where);
-    if (sort) q.sort(sort);
-    if (select) q.select(select);
-    if (skip !== undefined) q.skip(skip);
-    if (!count && limit !== undefined) q.limit(limit);
-    if (count) return res.status(200).json({ message: "OK", data: await User.countDocuments(where) });
-    res.status(200).json({ message: "OK", data: await q.lean() });
-  } catch (e) { next(e); }
+    const query = User.find();
+
+    if (req.query.where) query.find(JSON.parse(req.query.where));
+    if (req.query.sort) query.sort(JSON.parse(req.query.sort));
+    if (req.query.select) query.select(JSON.parse(req.query.select));
+    if (req.query.skip) query.skip(parseInt(req.query.skip));
+    if (req.query.limit) query.limit(parseInt(req.query.limit));
+
+    if (req.query.count === "true") {
+      const count = await query.countDocuments();
+      return res.status(200).json({ message: "OK", data: count });
+    }
+
+    const users = await query.exec();
+    res.status(200).json({ message: "OK", data: users });
+  } catch (e) {
+    res.status(500).json({ message: "Server error", data: e.message });
+  }
 });
 
 // POST /api/users
-router.post("/", async (req, res, next) => {
+router.post("/", async (req, res) => {
   try {
     const { name, email, pendingTasks = [] } = req.body || {};
-    if (!name || !email) { const e = new Error("User must include name and email"); e.statusCode = 400; e.expose = true; throw e; }
-    const user = await User.create({ name, email, pendingTasks });
+    if (!name || !email) {
+      return res.status(400).json({ message: "User must include name and email", data: {} });
+    }
 
-    if (pendingTasks?.length) {
+    const existing = await User.findOne({ email });
+    if (existing) {
+      return res.status(400).json({ message: "A user with this email already exists", data: {} });
+    }
+
+    const user = await User.create({ name, email, pendingTasks });
+    if (pendingTasks.length > 0) {
       await Task.updateMany(
         { _id: { $in: pendingTasks } },
         { $set: { assignedUser: user._id.toString(), assignedUserName: user.name } }
       );
     }
-    res.status(201).json({ message: "Created", data: user.toObject() });
+
+    res.status(201).json({ message: "Created", data: user });
   } catch (e) {
-    if (e.code === 11000) { e.statusCode = 400; e.expose = true; e.message = "A user with this email already exists"; }
-    next(e);
+    res.status(500).json({ message: "Server error", data: e.message });
   }
 });
 
 // GET /api/users/:id
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id))
+    return res.status(400).json({ message: "Invalid user ID format", data: {} });
+
   try {
-    if (!req.params.id || !req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
-      const e = new Error("Invalid user ID");
-      e.statusCode = 400;
-      e.expose = true;
-      throw e;
-    }
+    const q = User.findById(id);
+    if (req.query.select) q.select(JSON.parse(req.query.select));
 
-    const select = parseJSONParam(req.query.select, undefined);
-    const q = User.findById(req.params.id);
-    if (select) q.select(select);
+    const user = await q.exec();
+    if (!user) return res.status(404).json({ message: "User not found", data: {} });
 
-    const doc = await q.lean();
-    if (!doc) {
-      return res.status(404).json({ message: "User not found", data: null });
-    }
-
-    res.status(200).json({ message: "OK", data: doc });
+    res.status(200).json({ message: "OK", data: user });
   } catch (e) {
-    
-    if (e.name === "CastError") {
-      e.statusCode = 400;
-      e.expose = true;
-      e.message = "Invalid user ID format";
-    }
-    next(e);
+    res.status(500).json({ message: "Server error", data: e.message });
   }
 });
 
-
 // PUT /api/users/:id
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id))
+    return res.status(400).json({ message: "Invalid user ID format", data: {} });
+
   try {
     const { name, email, pendingTasks = [] } = req.body || {};
-    if (!name || !email) { const e = new Error("User must include name and email"); e.statusCode = 400; e.expose = true; throw e; }
+    if (!name || !email)
+      return res.status(400).json({ message: "User must include name and email", data: {} });
 
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User not found", data: null });
+    const user = await User.findById(id);
+    if (!user) return res.status(404).json({ message: "User not found", data: {} });
 
-    user.name = name; user.email = email; user.pendingTasks = Array.isArray(pendingTasks) ? pendingTasks : [];
+    user.name = name;
+    user.email = email;
+    user.pendingTasks = Array.isArray(pendingTasks) ? pendingTasks : [];
     await user.save();
 
+    // maintain two-way reference
     await Task.updateMany(
       { assignedUser: user._id.toString(), _id: { $nin: user.pendingTasks } },
       { $set: { assignedUser: "", assignedUserName: "unassigned" } }
     );
-    if (user.pendingTasks.length) {
-      await Task.updateMany(
-        { _id: { $in: user.pendingTasks } },
-        { $set: { assignedUser: user._id.toString(), assignedUserName: user.name } }
-      );
-    }
-    res.status(200).json({ message: "OK", data: user.toObject() });
+    await Task.updateMany(
+      { _id: { $in: user.pendingTasks } },
+      { $set: { assignedUser: user._id.toString(), assignedUserName: user.name } }
+    );
+
+    res.status(200).json({ message: "Updated", data: user });
   } catch (e) {
-    if (e.code === 11000) { e.statusCode = 400; e.expose = true; e.message = "A user with this email already exists"; }
-    next(e);
+    res.status(500).json({ message: "Server error", data: e.message });
   }
 });
 
 // DELETE /api/users/:id
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id))
+    return res.status(400).json({ message: "Invalid user ID format", data: {} });
+
   try {
-    const user = await User.findByIdAndDelete(req.params.id).lean();
-    if (!user) return res.status(404).json({ message: "User not found", data: null });
+    const user = await User.findByIdAndDelete(id);
+    if (!user) return res.status(404).json({ message: "User not found", data: {} });
+
     await Task.updateMany(
-      { assignedUser: user._id.toString(), completed: false },
+      { assignedUser: user._id.toString() },
       { $set: { assignedUser: "", assignedUserName: "unassigned" } }
     );
+
     res.status(200).json({ message: "Deleted", data: user });
-  } catch (e) { next(e); }
+  } catch (e) {
+    res.status(500).json({ message: "Server error", data: e.message });
+  }
 });
 
 module.exports = router;

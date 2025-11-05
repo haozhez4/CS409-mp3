@@ -4,42 +4,28 @@ const mongoose = require("mongoose");
 const Task = require("../models/task");
 const User = require("../models/user");
 
+// helper
 async function addToPending(userIdStr, taskIdStr) {
-  if (!userIdStr || !mongoose.Types.ObjectId.isValid(userIdStr)) return;
-  await User.updateOne(
-    { _id: userIdStr },
-    { $addToSet: { pendingTasks: taskIdStr } }
-  );
+  if (mongoose.Types.ObjectId.isValid(userIdStr))
+    await User.updateOne({ _id: userIdStr }, { $addToSet: { pendingTasks: taskIdStr } });
 }
 
 async function removeFromPending(userIdStr, taskIdStr) {
-  if (!userIdStr || !mongoose.Types.ObjectId.isValid(userIdStr)) return;
-  await User.updateOne(
-    { _id: userIdStr },
-    { $pull: { pendingTasks: taskIdStr } }
-  );
+  if (mongoose.Types.ObjectId.isValid(userIdStr))
+    await User.updateOne({ _id: userIdStr }, { $pull: { pendingTasks: taskIdStr } });
 }
 
-
 // GET /api/tasks
-router.get("/", async (req, res, next) => {
+router.get("/", async (req, res) => {
   try {
     const q = Task.find();
 
-    // where
     if (req.query.where) q.find(JSON.parse(req.query.where));
-
-    // sort
     if (req.query.sort) q.sort(JSON.parse(req.query.sort));
-
-    // select
     if (req.query.select) q.select(JSON.parse(req.query.select));
-
-    // skip / limit
     if (req.query.skip) q.skip(parseInt(req.query.skip));
     if (req.query.limit) q.limit(parseInt(req.query.limit));
 
-    // count
     if (req.query.count === "true") {
       const count = await q.countDocuments();
       return res.status(200).json({ message: "OK", data: count });
@@ -48,29 +34,30 @@ router.get("/", async (req, res, next) => {
     const tasks = await q.exec();
     res.status(200).json({ message: "OK", data: tasks });
   } catch (e) {
-    next(e);
+    res.status(500).json({ message: "Server error", data: e.message });
   }
 });
 
 // GET /api/tasks/:id
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id))
+    return res.status(400).json({ message: "Invalid task ID format", data: {} });
+
   try {
-    const q = Task.findById(req.params.id);
+    const q = Task.findById(id);
     if (req.query.select) q.select(JSON.parse(req.query.select));
-
     const task = await q.exec();
-    if (!task) {
-      return res.status(404).json({ message: "Task not found", data: {} });
-    }
 
+    if (!task) return res.status(404).json({ message: "Task not found", data: {} });
     res.status(200).json({ message: "OK", data: task });
   } catch (e) {
-    next(e);
+    res.status(500).json({ message: "Server error", data: e.message });
   }
 });
 
 // POST /api/tasks
-router.post("/", async (req, res, next) => {
+router.post("/", async (req, res) => {
   try {
     const {
       name,
@@ -81,11 +68,8 @@ router.post("/", async (req, res, next) => {
       assignedUserName = "unassigned",
     } = req.body || {};
 
-    if (!name || !deadline) {
-      return res
-        .status(400)
-        .json({ message: "Task must include name and deadline", data: {} });
-    }
+    if (!name || !deadline)
+      return res.status(400).json({ message: "Task must include name and deadline", data: {} });
 
     const task = new Task({
       name,
@@ -99,92 +83,71 @@ router.post("/", async (req, res, next) => {
     if (assignedUser && mongoose.Types.ObjectId.isValid(assignedUser)) {
       const user = await User.findById(assignedUser);
       if (user && !completed) {
-        user.pendingTasks.push(task._id.toString());
-        await user.save();
-      } else if (!user) {
+        await addToPending(assignedUser, task._id.toString());
+      } else {
         task.assignedUser = "";
         task.assignedUserName = "unassigned";
       }
-    } else {
-      task.assignedUser = "";
-      task.assignedUserName = "unassigned";
     }
 
     await task.save();
     res.status(201).json({ message: "Created", data: task });
   } catch (e) {
-    console.error("Error in POST /api/tasks:", e);
-    res.status(500).json({ message: "Server Error", data: e.message });
+    res.status(500).json({ message: "Server error", data: e.message });
   }
 });
 
 // PUT /api/tasks/:id
-router.put("/:id", async (req, res, next) => {
+router.put("/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id))
+    return res.status(400).json({ message: "Invalid task ID format", data: {} });
+
   try {
     const {
       name,
       description = "",
       deadline,
       completed,
-      assignedUser,
-      assignedUserName,
+      assignedUser = "",
+      assignedUserName = "unassigned",
     } = req.body || {};
 
-    if (!name || !deadline) {
-      return res
-        .status(400)
-        .json({ message: "Task must include name and deadline", data: {} });
-    }
+    if (!name || !deadline)
+      return res.status(400).json({ message: "Task must include name and deadline", data: {} });
 
-    const existingTask = await Task.findById(req.params.id);
-    if (!existingTask)
-      return res.status(404).json({ message: "Task not found", data: {} });
+    const task = await Task.findById(id);
+    if (!task) return res.status(404).json({ message: "Task not found", data: {} });
 
-    if (
-      existingTask.assignedUser &&
-      existingTask.assignedUser !== assignedUser
-    ) {
-      await removeFromPending(existingTask.assignedUser, existingTask._id);
-    }
+    if (task.assignedUser && task.assignedUser !== assignedUser)
+      await removeFromPending(task.assignedUser, task._id);
 
-    existingTask.name = name;
-    existingTask.description = description;
-    existingTask.deadline = deadline;
-    existingTask.completed = completed;
-    existingTask.assignedUser = assignedUser || "";
-    existingTask.assignedUserName = assignedUserName || "unassigned";
+    Object.assign(task, { name, description, deadline, completed, assignedUser, assignedUserName });
+    await task.save();
 
-    await existingTask.save();
+    if (assignedUser && mongoose.Types.ObjectId.isValid(assignedUser) && !completed)
+      await addToPending(assignedUser, task._id.toString());
 
-
-    if (
-      assignedUser &&
-      mongoose.Types.ObjectId.isValid(assignedUser) &&
-      !completed
-    ) {
-      await addToPending(assignedUser, existingTask._id.toString());
-    }
-
-    res.status(200).json({ message: "Updated", data: existingTask });
+    res.status(200).json({ message: "Updated", data: task });
   } catch (e) {
-    next(e);
+    res.status(500).json({ message: "Server error", data: e.message });
   }
 });
 
 // DELETE /api/tasks/:id
-router.delete("/:id", async (req, res, next) => {
+router.delete("/:id", async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id))
+    return res.status(400).json({ message: "Invalid task ID format", data: {} });
+
   try {
-    const task = await Task.findByIdAndDelete(req.params.id);
-    if (!task)
-      return res.status(404).json({ message: "Task not found", data: {} });
+    const task = await Task.findByIdAndDelete(id);
+    if (!task) return res.status(404).json({ message: "Task not found", data: {} });
 
-    if (task.assignedUser) {
-      await removeFromPending(task.assignedUser, task._id.toString());
-    }
-
+    if (task.assignedUser) await removeFromPending(task.assignedUser, task._id.toString());
     res.status(200).json({ message: "Deleted", data: task });
   } catch (e) {
-    next(e);
+    res.status(500).json({ message: "Server error", data: e.message });
   }
 });
 
