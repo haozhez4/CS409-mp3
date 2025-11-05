@@ -42,14 +42,34 @@ router.post("/", async (req, res, next) => {
 // GET /api/users/:id
 router.get("/:id", async (req, res, next) => {
   try {
+    if (!req.params.id || !req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+      const e = new Error("Invalid user ID");
+      e.statusCode = 400;
+      e.expose = true;
+      throw e;
+    }
+
     const select = parseJSONParam(req.query.select, undefined);
     const q = User.findById(req.params.id);
     if (select) q.select(select);
+
     const doc = await q.lean();
-    if (!doc) return res.status(404).json({ message: "User not found", data: null });
+    if (!doc) {
+      return res.status(404).json({ message: "User not found", data: null });
+    }
+
     res.status(200).json({ message: "OK", data: doc });
-  } catch (e) { next(e); }
+  } catch (e) {
+    
+    if (e.name === "CastError") {
+      e.statusCode = 400;
+      e.expose = true;
+      e.message = "Invalid user ID format";
+    }
+    next(e);
+  }
 });
+
 
 // PUT /api/users/:id
 router.put("/:id", async (req, res, next) => {
